@@ -90,10 +90,34 @@ def cleanup_sandbox(sandbox_path):
     shutil.rmtree(sandbox_path, ignore_errors=True)
 
 
+def _run_claude(prompt, sandbox, config):
+    """Run claude CLI in sandbox, return (success, output)."""
+    env = {**os.environ, "HOME": sandbox}
+    try:
+        result = subprocess.run(
+            ["claude", "--print", "--dangerously-skip-permissions", "-p", prompt],
+            cwd=sandbox,
+            capture_output=True,
+            text=True,
+            timeout=config["job_timeout_seconds"],
+            env=env,
+        )
+        output = result.stdout or result.stderr
+        # Enforce max output size
+        max_bytes = config.get("max_output_bytes", 1_000_000)
+        if len(output) > max_bytes:
+            output = output[:max_bytes] + "\n[output truncated]"
+        return result.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, f"Job timed out after {config['job_timeout_seconds']}s"
+    except FileNotFoundError:
+        return False, "claude CLI not found in PATH"
+
+
 def execute_job(job, config):
     """Execute a job in a sandboxed environment.
 
-    Returns (success: bool, output: str, duration_seconds: float).
+    Returns (success: bool, output: str, duration_seconds: float, job_type: str).
     """
     sandbox = create_sandbox(config)
     start_time = time.time()
@@ -104,34 +128,68 @@ def execute_job(job, config):
         with open(input_file, "w") as f:
             json.dump(job, f)
 
-        # Job type determines execution
         job_type = job.get("type", "prompt")
-        timeout = config["job_timeout_seconds"]
 
         if job_type == "prompt":
-            # Simple prompt job — write prompt to file, agent processes it
             prompt = job.get("prompt", "")
-            output_file = os.path.join(sandbox, "output.txt")
-            with open(os.path.join(sandbox, "prompt.txt"), "w") as f:
+            if not prompt:
+                return False, "No prompt provided", time.time() - start_time, job_type
+            prompt_file = os.path.join(sandbox, "prompt.txt")
+            with open(prompt_file, "w") as f:
                 f.write(prompt)
-            # The actual execution would be handled by Claude Code
-            # For now, return the prompt as acknowledgment
-            return True, f"Job received: {prompt[:200]}", time.time() - start_time
+            success, output = _run_claude(prompt, sandbox, config)
+            return success, output, time.time() - start_time, job_type
 
         elif job_type == "code-review":
-            # Code review job — diff provided, analysis expected
             diff = job.get("diff", "")
-            with open(os.path.join(sandbox, "diff.patch"), "w") as f:
+            if not diff:
+                return False, "No diff provided", time.time() - start_time, job_type
+            diff_file = os.path.join(sandbox, "diff.patch")
+            with open(diff_file, "w") as f:
                 f.write(diff)
-            return True, f"Code review job received ({len(diff)} bytes)", time.time() - start_time
+            review_prompt = (
+                "Review the following code diff. Identify bugs, security issues, "
+                "and suggest improvements. Be concise.\n\n" + diff
+            )
+            success, output = _run_claude(review_prompt, sandbox, config)
+            return success, output, time.time() - start_time, job_type
+
+        elif job_type == "research":
+            question = job.get("prompt", "")
+            if not question:
+                return False, "No question provided", time.time() - start_time, job_type
+            research_prompt = (
+                "Research the following question using web search. "
+                "Provide a thorough but concise answer with sources.\n\n" + question
+            )
+            success, output = _run_claude(research_prompt, sandbox, config)
+            return success, output, time.time() - start_time, job_type
 
         else:
-            return False, f"Unknown job type: {job_type}", time.time() - start_time
+            return False, f"Unknown job type: {job_type}", time.time() - start_time, job_type
 
     except Exception as e:
-        return False, str(e), time.time() - start_time
+        return False, str(e), time.time() - start_time, job.get("type", "unknown")
     finally:
         cleanup_sandbox(sandbox)
+
+
+def record_job(job_type, success, output_preview, duration, earned_usd):
+    """Append a completed job to history."""
+    history = load_history()
+    history["jobs_completed"] += 1
+    history["total_earned_usd"] += earned_usd
+    history["jobs"].append({
+        "type": job_type,
+        "success": success,
+        "output_preview": output_preview[:200],
+        "duration_seconds": round(duration, 2),
+        "earned_usd": earned_usd,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
+    # Keep only last 100 jobs
+    history["jobs"] = history["jobs"][-100:]
+    save_history(history)
 
 
 # ---------------------------------------------------------------------------
