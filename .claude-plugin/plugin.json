@@ -1,6 +1,6 @@
 {
   "name": "recoup",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sell idle Claude Code capacity on agent marketplaces. Recoup subscription costs by running sandboxed jobs during quiet hours.",
   "author": {
     "name": "Tim Garthwaite",
