@@ -6,7 +6,7 @@
     "name": "Tim Garthwaite",
     "url": "https://github.com/mividtim"
   },
-  "repository": "https://github.com/mividtim/claude-code-recoup",
+  "repository": "https://github.com/agiterra/recoup-claude-code",
   "license": "MIT",
   "keywords": ["recoup", "marketplace", "x402", "micropayments", "idle-capacity"]
 }
